@@ -1,0 +1,412 @@
+Input: stmfts - restore FTS5 after system suspend
+
+System suspend switches off the controller even while an input device
+is open. Restore FTS5 controller interrupts and active scanning before
+enabling the Linux IRQ after reset. Release contacts before removing
+power and send the sleep command before asserting reset.
+
+Track regulator ownership independently of whether the controller is
+ready. Roll back failed system suspend and keep runtime PM suspended
+if initialization fails, so a later resume can retry the full sequence.
+
+SPDX-License-Identifier: GPL-2.0-only
+
+diff --git a/drivers/input/touchscreen/stmfts.c b/drivers/input/touchscreen/stmfts.c
+index fb03017..cc18716 100644
+--- a/drivers/input/touchscreen/stmfts.c
++++ b/drivers/input/touchscreen/stmfts.c
+@@ -102,6 +102,12 @@ static const struct regulator_bulk_data stmfts_supplies[] = {
+ 	{ .supply = "avdd" },
+ };
+ 
++enum stmfts_power_state {
++	STMFTS_POWER_OFF,
++	STMFTS_POWER_RESET,
++	STMFTS_POWER_READY,
++};
++
+ struct stmfts_data {
+ 	const struct stmfts_chip_ops *ops;
+ 
+@@ -115,6 +121,7 @@ struct stmfts_data {
+ 	struct touchscreen_properties prop;
+ 
+ 	struct regulator_bulk_data *supplies;
++	enum stmfts_power_state power_state;
+ 
+ 	/*
+ 	 * Presence of ledvdd will be used also to check
+@@ -143,7 +150,7 @@ struct stmfts_data {
+ };
+ 
+ struct stmfts_chip_ops {
+-	int  (*configure)(struct stmfts_data *sdata);
++	int  (*configure)(struct stmfts_data *sdata, bool active);
+ 	void (*power_off)(struct stmfts_data *sdata);
+ 	int  (*setup_input)(struct stmfts_data *sdata);
+ 	int  (*input_open)(struct input_dev *dev);
+@@ -672,17 +679,16 @@ static int stmfts5_input_open(struct input_dev *dev)
+ 	if (err)
+ 		return err;
+ 
+-	mutex_lock(&sdata->mutex);
+-	sdata->running = true;
+-	mutex_unlock(&sdata->mutex);
++	scoped_guard(mutex, &sdata->mutex) {
++		err = stmfts5_set_scan_mode(sdata, STMFTS5_SCAN_ACTIVE_MULTI_TOUCH);
++		if (!err)
++			sdata->running = true;
++	}
+ 
+-	err = stmfts5_set_scan_mode(sdata, STMFTS5_SCAN_ACTIVE_MULTI_TOUCH);
+-	if (err) {
++	if (err)
+ 		pm_runtime_put_sync(&sdata->client->dev);
+-		return err;
+-	}
+ 
+-	return 0;
++	return err;
+ }
+ 
+ static void stmfts_input_close(struct input_dev *dev)
+@@ -690,6 +696,12 @@ static void stmfts_input_close(struct input_dev *dev)
+ 	struct stmfts_data *sdata = input_get_drvdata(dev);
+ 	int err;
+ 
++	if (sdata->power_state != STMFTS_POWER_READY) {
++		scoped_guard(mutex, &sdata->mutex)
++			sdata->running = false;
++		goto put;
++	}
++
+ 	err = i2c_smbus_write_byte(sdata->client, STMFTS_MS_MT_SENSE_OFF);
+ 	if (err)
+ 		dev_warn(&sdata->client->dev,
+@@ -715,23 +727,25 @@ static void stmfts_input_close(struct input_dev *dev)
+ 				 "failed to disable touchkey: %d\n", err);
+ 	}
+ 
++put:
+ 	pm_runtime_put_sync(&sdata->client->dev);
+ }
+ 
+ static void stmfts5_input_close(struct input_dev *dev)
+ {
+ 	struct stmfts_data *sdata = input_get_drvdata(dev);
+-	int err;
++	int err = 0;
++
++	scoped_guard(mutex, &sdata->mutex) {
++		if (sdata->power_state == STMFTS_POWER_READY)
++			err = stmfts5_set_scan_mode(sdata, 0x00);
++		sdata->running = false;
++	}
+ 
+-	err = stmfts5_set_scan_mode(sdata, 0x00);
+ 	if (err)
+ 		dev_warn(&sdata->client->dev,
+ 			 "failed to disable touchscreen: %d\n", err);
+ 
+-	mutex_lock(&sdata->mutex);
+-	sdata->running = false;
+-	mutex_unlock(&sdata->mutex);
+-
+ 	pm_runtime_put_sync(&sdata->client->dev);
+ }
+ 
+@@ -782,6 +796,9 @@ static ssize_t stmfts_sysfs_read_status(struct device *dev,
+ 	u8 status[4];
+ 	int err;
+ 
++	if (sdata->power_state != STMFTS_POWER_READY)
++		return -EIO;
++
+ 	err = i2c_smbus_read_i2c_block_data(sdata->client, STMFTS_READ_STATUS,
+ 					    sizeof(status), status);
+ 	if (err)
+@@ -816,6 +833,9 @@ static ssize_t stmfts_sysfs_hover_enable_write(struct device *dev,
+ 
+ 	if (hover != sdata->hover_enabled) {
+ 		if (sdata->running && sdata->ops->set_hover) {
++			if (sdata->power_state != STMFTS_POWER_READY)
++				return -EIO;
++
+ 			err = sdata->ops->set_hover(sdata, hover);
+ 			if (err)
+ 				return err;
+@@ -878,7 +898,7 @@ static void stmfts_reset(struct stmfts_data *sdata)
+ 	msleep(50);
+ }
+ 
+-static int stmfts_configure(struct stmfts_data *sdata)
++static int stmfts_configure(struct stmfts_data *sdata, bool active)
+ {
+ 	int err;
+ 
+@@ -892,11 +912,11 @@ static int stmfts_configure(struct stmfts_data *sdata)
+ 
+ 	err = stmfts_command(sdata, STMFTS_SYSTEM_RESET);
+ 	if (err)
+-		return err;
++		goto disable_irq;
+ 
+ 	err = stmfts_command(sdata, STMFTS_SLEEP_OUT);
+ 	if (err)
+-		return err;
++		goto disable_irq;
+ 
+ 	/* optional tuning */
+ 	err = stmfts_command(sdata, STMFTS_MS_CX_TUNING);
+@@ -912,44 +932,83 @@ static int stmfts_configure(struct stmfts_data *sdata)
+ 
+ 	err = stmfts_command(sdata, STMFTS_FULL_FORCE_CALIBRATION);
+ 	if (err)
+-		return err;
++		goto disable_irq;
+ 
+-	/*
+-	 * At this point no one is using the touchscreen
+-	 * and I don't really care about the return value
+-	 */
+-	(void) i2c_smbus_write_byte(sdata->client, STMFTS_SLEEP_IN);
++	if (!active) {
++		err = i2c_smbus_write_byte(sdata->client, STMFTS_SLEEP_IN);
++		if (err)
++			goto disable_irq;
++	}
+ 
+ 	return 0;
++
++disable_irq:
++	disable_irq(sdata->client->irq);
++	return err;
+ }
+ 
+-static int stmfts_power_on(struct stmfts_data *sdata)
++static int stmfts_power_off(struct stmfts_data *sdata)
+ {
+ 	int err;
+ 
+-	err = regulator_bulk_enable(ARRAY_SIZE(stmfts_supplies),
+-				    sdata->supplies);
+-	if (err)
+-		return err;
++	if (sdata->power_state == STMFTS_POWER_OFF)
++		return 0;
+ 
+-	/*
+-	 * The datasheet does not specify the power on time, but considering
+-	 * that the reset time is < 10ms, I sleep 20ms to be sure
+-	 */
+-	msleep(20);
++	if (sdata->power_state == STMFTS_POWER_READY) {
++		disable_irq(sdata->client->irq);
++		if (sdata->ops->power_off)
++			sdata->ops->power_off(sdata);
++	}
+ 
+ 	if (sdata->reset_gpio)
+-		stmfts_reset(sdata);
++		gpiod_set_value_cansleep(sdata->reset_gpio, 1);
+ 
+-	err = sdata->ops->configure(sdata);
+-	if (err)
+-		regulator_bulk_disable(ARRAY_SIZE(stmfts_supplies),
+-				       sdata->supplies);
++	/* A failed bulk disable retains the regulator references. */
++	sdata->power_state = STMFTS_POWER_RESET;
++	err = regulator_bulk_disable(ARRAY_SIZE(stmfts_supplies), sdata->supplies);
++	if (!err)
++		sdata->power_state = STMFTS_POWER_OFF;
+ 
+ 	return err;
+ }
+ 
+-static int stmfts5_configure(struct stmfts_data *sdata)
++static void stmfts_power_off_action(void *data)
++{
++	stmfts_power_off(data);
++}
++
++static int stmfts_power_on(struct stmfts_data *sdata, bool active)
++{
++	int err;
++
++	if (sdata->power_state == STMFTS_POWER_READY)
++		return 0;
++
++	if (sdata->power_state == STMFTS_POWER_OFF) {
++		err = regulator_bulk_enable(ARRAY_SIZE(stmfts_supplies),
++					    sdata->supplies);
++		if (err)
++			return err;
++
++		sdata->power_state = STMFTS_POWER_RESET;
++		/* Allow the supplies to settle before accessing the chip. */
++		msleep(20);
++	}
++
++	if (sdata->reset_gpio)
++		stmfts_reset(sdata);
++
++	err = sdata->ops->configure(sdata, active);
++	if (err) {
++		stmfts_power_off(sdata);
++		return err;
++	}
++
++	sdata->power_state = STMFTS_POWER_READY;
++	return 0;
++}
++
++static int stmfts5_configure(struct stmfts_data *sdata, bool active)
+ {
+ 	u8 event[STMFTS_EVENT_SIZE];
+ 	int ret;
+@@ -961,6 +1020,13 @@ static int stmfts5_configure(struct stmfts_data *sdata)
+ 	if (ret < 0)
+ 		return ret;
+ 
++	if (active)
++		ret = sdata->ops->runtime_resume(sdata);
++	else
++		ret = i2c_smbus_write_byte(sdata->client, STMFTS_SLEEP_IN);
++	if (ret)
++		return ret;
++
+ 	enable_irq(sdata->client->irq);
+ 
+ 	return 0;
+@@ -968,24 +1034,25 @@ static int stmfts5_configure(struct stmfts_data *sdata)
+ 
+ static void stmfts5_chip_power_off(struct stmfts_data *sdata)
+ {
+-	i2c_smbus_write_byte(sdata->client, STMFTS_SLEEP_IN);
+-	msleep(20);
+-}
+-
+-static void stmfts_power_off(void *data)
+-{
+-	struct stmfts_data *sdata = data;
+-
+-	disable_irq(sdata->client->irq);
+-
+-	if (sdata->reset_gpio)
+-		gpiod_set_value_cansleep(sdata->reset_gpio, 1);
+-
+-	if (sdata->ops->power_off)
+-		sdata->ops->power_off(sdata);
++	unsigned long contacts = sdata->touch_id | sdata->stylus_id;
++	unsigned long slot;
++
++	/* The controller loses its contacts when it is reset. */
++	if (contacts) {
++		for_each_set_bit(slot, &contacts, STMFTS_MAX_FINGERS) {
++			input_mt_slot(sdata->input, slot);
++			input_mt_report_slot_state(sdata->input, MT_TOOL_FINGER, false);
++		}
++		sdata->touch_id = 0;
++		sdata->stylus_id = 0;
++		input_report_key(sdata->input, BTN_TOUCH, 0);
++		input_sync(sdata->input);
++	}
+ 
+-	regulator_bulk_disable(ARRAY_SIZE(stmfts_supplies),
+-			       sdata->supplies);
++	if (!pm_runtime_status_suspended(&sdata->client->dev)) {
++		i2c_smbus_write_byte(sdata->client, STMFTS_SLEEP_IN);
++		msleep(20);
++	}
+ }
+ 
+ static int stmfts_setup_input(struct stmfts_data *sdata)
+@@ -1147,11 +1214,11 @@ static int stmfts_probe(struct i2c_client *client)
+ 
+ 	dev_dbg(dev, "initializing ST-Microelectronics FTS...\n");
+ 
+-	err = stmfts_power_on(sdata);
++	err = stmfts_power_on(sdata, !IS_ENABLED(CONFIG_PM));
+ 	if (err)
+ 		return err;
+ 
+-	err = devm_add_action_or_reset(dev, stmfts_power_off, sdata);
++	err = devm_add_action_or_reset(dev, stmfts_power_off_action, sdata);
+ 	if (err)
+ 		return err;
+ 
+@@ -1189,6 +1256,9 @@ static int stmfts_runtime_suspend(struct device *dev)
+ 	struct stmfts_data *sdata = dev_get_drvdata(dev);
+ 	int ret;
+ 
++	if (sdata->power_state != STMFTS_POWER_READY)
++		return 0;
++
+ 	ret = i2c_smbus_write_byte(sdata->client, STMFTS_SLEEP_IN);
+ 	if (ret)
+ 		dev_warn(dev, "failed to suspend device: %d\n", ret);
+@@ -1243,6 +1313,10 @@ static int stmfts5_chip_runtime_resume(struct stmfts_data *sdata)
+ 
+ 	msleep(20);
+ 
++	guard(mutex)(&sdata->mutex);
++	if (sdata->running)
++		return stmfts5_set_scan_mode(sdata, STMFTS5_SCAN_ACTIVE_MULTI_TOUCH);
++
+ 	return 0;
+ }
+ 
+@@ -1251,27 +1325,47 @@ static int stmfts_runtime_resume(struct device *dev)
+ 	struct stmfts_data *sdata = dev_get_drvdata(dev);
+ 	int ret;
+ 
+-	ret = sdata->ops->runtime_resume(sdata);
++	if (sdata->power_state == STMFTS_POWER_READY)
++		ret = sdata->ops->runtime_resume(sdata);
++	else
++		ret = stmfts_power_on(sdata, true);
+ 	if (ret)
+ 		dev_err(dev, "failed to resume device: %d\n", ret);
+ 
+ 	return ret;
+ }
+ 
+-static int stmfts_suspend(struct device *dev)
++static int stmfts_resume(struct device *dev)
+ {
+ 	struct stmfts_data *sdata = dev_get_drvdata(dev);
++	bool suspended = pm_runtime_status_suspended(dev);
++	bool active = !suspended || sdata->running;
++	int ret;
+ 
+-	stmfts_power_off(sdata);
++	ret = stmfts_power_on(sdata, active);
++	if (!ret && active && suspended) {
++		ret = pm_runtime_set_active(dev);
++		if (ret)
++			stmfts_power_off(sdata);
++	}
++	if (ret)
++		pm_runtime_set_suspended(dev);
+ 
+-	return 0;
++	pm_runtime_enable(dev);
++	return ret;
+ }
+ 
+-static int stmfts_resume(struct device *dev)
++static int stmfts_suspend(struct device *dev)
+ {
+ 	struct stmfts_data *sdata = dev_get_drvdata(dev);
++	int ret;
++
++	pm_runtime_disable(dev);
++	ret = stmfts_power_off(sdata);
++	if (ret && stmfts_resume(dev))
++		dev_err(dev, "failed to restore device after suspend error\n");
+ 
+-	return stmfts_power_on(sdata);
++	return ret;
+ }
+ 
+ static const struct dev_pm_ops stmfts_pm_ops = {
