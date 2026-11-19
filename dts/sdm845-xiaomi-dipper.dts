@@ -11,8 +11,8 @@
  * buttons and hall sensor, haptics, Bluetooth (WCN3990 on UART6), the GPU
  * (Adreno 630), the touchscreen (ST FTS5 on i2c14), the PMI8998 charger and
  * fuel gauge, the display (Samsung EA8074 cmd-mode panel on DSI0; needs the
- * panel-samsung-ea8074 driver) and audio (ADSP, WCD9340 codec, TAS2557
- * speaker amplifier). The modem, Wi-Fi, SLPI/CDSP and cameras are left
+ * panel-samsung-ea8074 driver), audio (ADSP, WCD9340 codec, TAS2557 speaker
+ * amplifier) and the rear IMX363 camera. The modem, Wi-Fi and SLPI/CDSP are
  * disabled: this unit has a failed RF transceiver and the modem crash-loops
  * if started.
  */
@@ -21,6 +21,7 @@
 
 #include <dt-bindings/arm/qcom,ids.h>
 #include <dt-bindings/input/input.h>
+#include <dt-bindings/media/video-interfaces.h>
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
 #include <dt-bindings/sound/qcom,q6afe.h>
@@ -189,6 +190,58 @@
 		enable-active-high;
 	};
 
+	cam_vana_1p8: cam-vana-1p8-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "cam_vana_1p8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		gpio = <&tlmm 12 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		startup-delay-us = <135>;
+	};
+
+	cam_vana_2p8: cam-vana-2p8-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "cam_vana_2p8";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		gpio = <&tlmm 40 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		startup-delay-us = <135>;
+	};
+
+	cam_vio: cam-vio-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "cam_vio";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		gpio = <&tlmm 75 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		startup-delay-us = <135>;
+	};
+
+	cam_vdig: cam-vdig-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "cam_vdig";
+		regulator-min-microvolt = <1350000>;
+		regulator-max-microvolt = <1350000>;
+		gpio = <&tlmm 99 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		startup-delay-us = <135>;
+	};
+
+	cam_vcore: cam-vcore-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "cam_vcore";
+		regulator-min-microvolt = <1050000>;
+		regulator-max-microvolt = <1050000>;
+		gpio = <&pm8998_gpios 11 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_vcore_en>;
+		startup-delay-us = <135>;
+	};
+
 	vreg_s4a_1p8: vreg-s4a-1p8 {
 		compatible = "regulator-fixed";
 		regulator-name = "vreg_s4a_1p8";
@@ -199,7 +252,7 @@
 	};
 };
 
-/* Only the rails used by UFS and USB; values match downstream dipper */
+/* PM8998 rails used on dipper; voltages from the downstream DT. */
 &apps_rsc {
 	regulators-0 {
 		compatible = "qcom,pm8998-rpmh-regulators";
@@ -248,6 +301,12 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
+		vreg_l22a_2p864: ldo22 {
+			regulator-min-microvolt = <2864000>;
+			regulator-max-microvolt = <2864000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
 		vreg_l24a_3p075: ldo24 {
 			regulator-min-microvolt = <3088000>;
 			regulator-max-microvolt = <3088000>;
@@ -286,6 +345,73 @@
 	status = "okay";
 };
 
+&camss {
+	vdda-phy-supply = <&vreg_l1a_0p875>;
+	vdda-pll-supply = <&vreg_l26a_1p2>;
+	status = "okay";
+
+	ports {
+		port@0 {
+			csiphy0_in: endpoint {
+				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+				clock-lanes = <7>;
+				data-lanes = <0 1 2 3>;
+				remote-endpoint = <&imx363_out>;
+			};
+		};
+	};
+};
+
+&cci {
+	pinctrl-0 = <&cci0_default>;
+	pinctrl-1 = <&cci0_sleep>;
+	status = "okay";
+};
+
+&cci_i2c0 {
+	/* Semco IMX363 module on the Dipper new MP v2.1 with the P0 pinout. */
+	camera@1a {
+		compatible = "xiaomi,dipper-imx363";
+		reg = <0x1a>;
+
+		clocks = <&clock_camcc CAM_CC_MCLK0_CLK>;
+		clock-names = "xvclk";
+		clock-frequency = <24000000>;
+
+		vana-supply = <&vreg_l22a_2p864>;
+		vana-1p8-supply = <&cam_vana_1p8>;
+		vana-aux-supply = <&cam_vana_2p8>;
+		vif-supply = <&cam_vio>;
+		vdig-supply = <&cam_vdig>;
+		vcore-supply = <&cam_vcore>;
+
+		reset-gpios = <&tlmm 119 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_mclk0_default &cam_rear_reset>;
+
+		orientation = <1>;
+		rotation = <270>;
+
+		port {
+			imx363_out: endpoint {
+				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+				clock-lanes = <0>;
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <636000000 321000000>;
+				remote-endpoint = <&csiphy0_in>;
+			};
+		};
+	};
+};
+
+&cci_i2c1 {
+	status = "disabled";
+};
+
+&cam_mclk0_default {
+	drive-strength = <4>;
+};
+
 &gcc {
 	protected-clocks = <GCC_QSPI_CORE_CLK>,
 			   <GCC_QSPI_CORE_CLK_SRC>,
@@ -295,6 +421,13 @@
 };
 
 &pm8998_gpios {
+	cam_vcore_en: cam-vcore-en-state {
+		pins = "gpio11";
+		function = "normal";
+		output-enable;
+		power-source = <0>;
+	};
+
 	vol_up_pin_a: vol-up-active-state {
 		pins = "gpio6";
 		function = "normal";
@@ -617,6 +750,13 @@
 };
 
 &tlmm {
+	cam_rear_reset: cam-rear-reset-state {
+		pins = "gpio119";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
 	sde_dsi_active: sde-dsi-active-state {
 		pins = "gpio6";
 		function = "gpio";

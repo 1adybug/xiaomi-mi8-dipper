@@ -60,7 +60,9 @@ Nothing in this port depends on that fault.
 | GPU (Adreno 630, Freedreno) | ✅ OpenGL ES 3.2 / GL via Mesa (`FD630`), devfreq 257–710 MHz; needs the zap shader from your stock ROM |
 | Touchscreen (ST FTS5, i2c14) | ✅ multi-touch through `stmfts` (`st,stmfts5`, FTS5 support from sdm845-mainline 7.1) |
 | Audio: speaker (TAS2557), earpiece and 2 microphones (WCD9340) | ✅ ADSP + q6 routing; ALSA UCM profile in `configs/ucm2`, plain-ALSA defaults in `tools/audio-defaults.sh` |
-| Modem, Wi-Fi, SLPI/CDSP, cameras | Disabled in the default DT. [Experimental Wi-Fi](docs/WIFI.md) has scanned on a Mi 8 with a working modem. |
+| Rear main camera (IMX363) | Enabled for the Semco module on Dipper new MP v2.1 with the P0 pinout. Capture awaits device testing with this kernel. [Phosh camera setup](docs/PHOSH.md#rear-camera) |
+| Front, telephoto and IR cameras | ❌ unavailable |
+| Modem, Wi-Fi, SLPI/CDSP | Disabled in the default DT. [Experimental Wi-Fi](docs/WIFI.md) has scanned on a Mi 8 with a working modem. |
 
 ---
 
@@ -121,7 +123,8 @@ pmbootstrap checksum device-xiaomi-dipper
 pmbootstrap config device xiaomi-dipper
 pmbootstrap config ui none                    # headless
 
-# 3. kernel with the built-in EA8074 panel driver and the ST FTS5 touch fixes
+# 3. kernel with the built-in EA8074 panel driver, FTS5 touch fixes,
+#    and the IMX363 camera power sequence
 kernel/apply-to-pmaports.sh "$A"
 pmbootstrap checksum linux-postmarketos-qcom-sdm845
 pmbootstrap build --force linux-postmarketos-qcom-sdm845
@@ -137,7 +140,7 @@ To try a kernel or DT without touching the boot partition, use
 `pmbootstrap flasher boot` (or `fastboot boot <image>`) instead of
 `flash_kernel`.
 
-The touch patches target the `sdm845-7.1-rc1-r0` kernel source in
+The kernel patches target the `sdm845-7.1-rc1-r0` kernel source in
 pmaports commit `f2795e91d24aa6a0dbf2296611445156f7138393`. For an existing
 installation, raise the local `pkgrel` above the installed version before
 building and use that version in the kernel pin below.
@@ -155,10 +158,10 @@ host gets `172.16.42.2`; then `ssh <user>@172.16.42.1`.
 
 ## After Installing
 
-* **Pin the kernel.** The display driver lives in your locally built
-  `linux-postmarketos-qcom-sdm845`. A plain `apk upgrade` would replace it
-  with the repository build, which has no panel driver. Also, the kernel
-  enforces module signatures (lockdown is forced to integrity) and every
+* **Pin the kernel.** The display, touchscreen, and camera patches live in
+  your locally built `linux-postmarketos-qcom-sdm845`. A plain `apk upgrade`
+  would replace it with the repository build. The kernel enforces module
+  signatures (lockdown is forced to integrity) and every
   build signs with its own key: a flashed `vmlinuz` from one build cannot
   load the modules of another, which first shows up as a missing USB
   gadget. Pin it in `/etc/apk/world` with an exact version, e.g.
@@ -265,6 +268,7 @@ dts/sdm845-xiaomi-dipper-wifi.dts      optional modem and Wi-Fi variant (GPL-2.0
 kernel/0001-drm-panel-add-samsung-ea8074.patch  panel driver (GPL-2.0)
 kernel/0002-input-stmfts-bound-fts5-fifo-reads.patch  FTS5 event FIFO fix (GPL-2.0-only)
 kernel/0003-input-stmfts-restore-fts5-after-suspend.patch  FTS5 suspend and resume fix (GPL-2.0-only)
+kernel/0002-media-imx363-dipper-power-sequence.patch  rear camera power sequencing (GPL-2.0)
 kernel/apply-to-pmaports.sh            add the patches to the pmOS kernel package
 pmaports/device-xiaomi-dipper/         postmarketOS device package
 scripts/fetch-dt-headers.sh            download DT sources from sdm845-mainline
