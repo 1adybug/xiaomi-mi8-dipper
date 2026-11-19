@@ -121,7 +121,7 @@ pmbootstrap checksum device-xiaomi-dipper
 pmbootstrap config device xiaomi-dipper
 pmbootstrap config ui none                    # headless
 
-# 3. kernel with the built-in EA8074 panel driver and the ST FTS5 touch fix
+# 3. kernel with the built-in EA8074 panel driver and the ST FTS5 touch fixes
 kernel/apply-to-pmaports.sh "$A"
 pmbootstrap checksum linux-postmarketos-qcom-sdm845
 pmbootstrap build --force linux-postmarketos-qcom-sdm845
@@ -137,7 +137,7 @@ To try a kernel or DT without touching the boot partition, use
 `pmbootstrap flasher boot` (or `fastboot boot <image>`) instead of
 `flash_kernel`.
 
-The touch fix was built against the `sdm845-7.1-rc1-r0` kernel source in
+The touch patches target the `sdm845-7.1-rc1-r0` kernel source in
 pmaports commit `f2795e91d24aa6a0dbf2296611445156f7138393`. For an existing
 installation, raise the local `pkgrel` above the installed version before
 building and use that version in the kernel pin below.
@@ -263,7 +263,8 @@ worked, all in `tools/`:
 dts/sdm845-xiaomi-dipper.dts           device tree (GPL-2.0)
 dts/sdm845-xiaomi-dipper-wifi.dts      optional modem and Wi-Fi variant (GPL-2.0)
 kernel/0001-drm-panel-add-samsung-ea8074.patch  panel driver (GPL-2.0)
-kernel/0002-input-stmfts-bound-fts5-fifo-reads.patch  FTS5 touch fix (GPL-2.0-only)
+kernel/0002-input-stmfts-bound-fts5-fifo-reads.patch  FTS5 event FIFO fix (GPL-2.0-only)
+kernel/0003-input-stmfts-restore-fts5-after-suspend.patch  FTS5 suspend and resume fix (GPL-2.0-only)
 kernel/apply-to-pmaports.sh            add the patches to the pmOS kernel package
 pmaports/device-xiaomi-dipper/         postmarketOS device package
 scripts/fetch-dt-headers.sh            download DT sources from sdm845-mainline

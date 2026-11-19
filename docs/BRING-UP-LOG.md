@@ -243,6 +243,18 @@ zero active slots at rest. Three separate taps at the Phosh greeter each
 produced a press and a release. The same image was written to `boot` and
 rebooted, and Phosh started with zero active slots at rest again.
 
+### Touch after system suspend
+
+On a Mi 8 running Nura edge, the FTS5 suspend fix was tested using a
+temporary boot image based on `sdm845-7.1-rc1-r0`. The image used the
+optional Wi-Fi DTB for remote observation.
+
+The phone completed three RTC-woken `s2idle` cycles with an evdev
+descriptor open and three with all input clients closed. The runtime PM
+state remained `active` after each wake with the descriptor open and
+`suspended` with no clients. Reopening the input device brought it back
+to `active`, and the Phosh greeter started with zero active touch slots.
+
 ## 9. Audio
 
 * ADSP: `adsp_pas` with `adsp.mbn` merged from the split `adsp.mdt/.bNN` in
