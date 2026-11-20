@@ -1,7 +1,8 @@
 # Phosh, USB networking and recovery on dipper
 
-This was tested on a Mi 8 running Nura edge (formerly postmarketOS) with
-the EA8074 panel patch and the [FTS5 FIFO fix](https://github.com/Mechres/xiaomi-mi8-dipper/pull/1).
+A Phosh session was tested on an existing Nura edge (formerly postmarketOS)
+installation on a Mi 8 with the EA8074 panel patch and the
+[FTS5 FIFO fix](https://github.com/Mechres/xiaomi-mi8-dipper/pull/1).
 The phone booted to the Phosh greeter and opened a desktop session.
 [Nura's supported interfaces](https://nura.eco/)
 
@@ -23,28 +24,45 @@ SSH and check that three separate taps each produce a press and a release
 at the greeter before flashing the boot partition. The trial and final
 boot of the FTS5 FIFO fix were both exercised on hardware.
 
-## Install Phosh on an existing Linux root
+## Build an optional Phosh image
 
-Set the clock as described in the README and arrange access to the Nura
-and Alpine package repositories. Place the following in
-`/etc/NetworkManager/conf.d/90-dipper-usb.conf` before installing Phosh.
-This lets the existing USB gadget keep managing `usb0` when
-NetworkManager starts.
+Prepare the device tree, local device package, and kernel using the
+[port build instructions](../README.md#installing). Set the local build to
+Phosh with OpenRC before generating the root filesystem.
+
+```sh
+pmbootstrap config device xiaomi-dipper
+pmbootstrap config ui phosh
+pmbootstrap config service_manager openrc
+pmbootstrap install --add mesa-dri-gallium
+```
+
+The interactive UI menu uses `deviceinfo_drm` to list Phosh. The explicit
+`ui` setting selects it for the local build. With the default recommendations
+enabled, the installer adds the language support, fonts, and recommended apps.
+The Phosh package enables greetd through its OpenRC install script.
+[Nura UI package metadata](https://docs.nura.eco/pmaports/main/packaging/ui-packages/apkbuild-metadata.html)
+
+Use the `flash_rootfs` and `flash_kernel` commands in the
+[port installation instructions](../README.md#installing) for the generated
+images. See the [GPU firmware notes](../README.md#after-installing) for hardware
+acceleration.
+
+## Check USB networking and the desktop
+
+If NetworkManager takes over `usb0`, place the following in
+`/etc/NetworkManager/conf.d/90-dipper-usb.conf` in the root filesystem. This
+lets the USB gadget keep managing the interface.
 
 ```ini
 [keyfile]
 unmanaged-devices=interface-name:usb0
 ```
 
-```sh
-apk add postmarketos-ui-phosh phosh-mobile-settings mesa-dri-gallium
-rc-update add greetd default
-```
-
-Reboot and check `loginctl seat-status seat0` over SSH. The greeter needs
-both DRM and input devices on the seat. When bringing up the desktop in
-the same boot as package installation, refreshing the device rules
-restored the seat on the tested phone.
+After boot, check `loginctl seat-status seat0` over SSH. The greeter needs
+both DRM and input devices on the seat. When Phosh was brought up on the
+existing installation, refreshing the device rules restored the seat on the
+tested phone.
 
 ```sh
 udevadm control --reload
