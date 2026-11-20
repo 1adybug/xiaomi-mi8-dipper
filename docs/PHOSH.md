@@ -55,6 +55,33 @@ udevadm settle
 rc-service greetd restart
 ```
 
+## Rear camera
+
+The device tree describes the Semco IMX363 at CCI address `0x1a` on
+the Dipper new MP v2.1 board with the P0 camera pinout. The sensor connects
+to CAMSS through CSIPHY0. Other module variants may use a different address
+or wiring. This port covers basic rear camera capture. Autofocus, optical
+stabilization, and the other camera modules are unavailable.
+[Dipper camera bring-up on Mobian](https://github.com/taygoth/dipper-mainline-port/tree/e6d1be1464e25a2bad68aa81641c0b7438edea78)
+
+Build both the device package and the patched 7.1 kernel from the current
+source. For an existing installation, use a higher local kernel `pkgrel`,
+update any exact APK version pins, install both rebuilt packages, and boot
+the regenerated boot image with its matching signed modules.
+
+Install GNOME Snapshot on an existing Phosh system with `apk add snapshot`.
+When building a Phosh image, add `snapshot` to the package list passed to
+`pmbootstrap install --add`. Open **Camera** in the app grid.
+
+To check detection and streaming, install `libcamera-tools` and run these
+commands as the Phosh session user. Select the IMX363 index from `cam --list`
+if it differs from `1`.
+
+```sh
+cam --list
+cam -c 1 --capture=30
+```
+
 ## Diagnose missing USB Ethernet on Windows
 
 On one Windows host the `18D1:D001` USB device was assigned a legacy

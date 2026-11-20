@@ -1,5 +1,5 @@
 #!/bin/sh
-# Add the Samsung EA8074 panel driver and ST FTS5 touch fixes to the
+# Add the Dipper display, touchscreen, and camera patches to the
 # postmarketOS sdm845 kernel package in a pmaports checkout.
 # usage: kernel/apply-to-pmaports.sh <pmaports-dir>
 #        pmbootstrap checksum linux-postmarketos-qcom-sdm845
@@ -11,7 +11,8 @@ D=$(cd "$(dirname "$0")" && pwd)
 for N in \
 	0001-drm-panel-add-samsung-ea8074.patch \
 	0002-input-stmfts-bound-fts5-fifo-reads.patch \
-	0003-input-stmfts-restore-fts5-after-suspend.patch
+	0003-input-stmfts-restore-fts5-after-suspend.patch \
+	0002-media-imx363-dipper-power-sequence.patch
 do
 	cp "$D/$N" "$K/"
 	grep -Fq "$N" "$K/APKBUILD" || sed -i "/^source=\"/,/^\"/ s#^\"\$#\t$N\n\"#" "$K/APKBUILD"

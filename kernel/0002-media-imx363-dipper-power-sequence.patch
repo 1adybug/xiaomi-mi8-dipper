@@ -1,0 +1,238 @@
+media: imx363: power the Dipper P0 camera module
+
+The Dipper P0 module needs MCLK running before power-up and has three
+board-specific rails in addition to VANA, VDIG and VIF. Enable those
+rails in order for the Dipper compatible and release reset once the
+clock and supplies have settled. Keep the three-supply configuration
+for other IMX363 modules.
+
+Link: https://github.com/taygoth/dipper-mainline-port/blob/e6d1be1464e25a2bad68aa81641c0b7438edea78/kernel/patches/dipper-port/0006-media-i2c-imx363-start-MCLK-before-supplies.patch
+---
+
+diff --git a/drivers/media/i2c/imx363.c b/drivers/media/i2c/imx363.c
+--- a/drivers/media/i2c/imx363.c
++++ b/drivers/media/i2c/imx363.c
+@@ -7,6 +7,7 @@
+ #include <linux/i2c.h>
+ #include <linux/module.h>
+ #include <linux/pm_runtime.h>
++#include <linux/property.h>
+ #include <linux/regulator/consumer.h>
+ #include <media/v4l2-cci.h>
+ #include <media/v4l2-ctrls.h>
+@@ -469,15 +470,44 @@
+ 	"Pseudorandom Sequence (PN9)",
+ };
+ 
+-/* regulator supplies */
+-static const char * const imx363_supply_name[] = {
+-	/* Supplies can be enabled in any order */
+-	"vana",  /* Analog (2.8V) supply */
+-	"vdig",  /* Digital Core (1.2V) supply */
+-	"vif",  /* IF (1.8V) supply */
+-};
+-
+-#define IMX363_NUM_SUPPLIES ARRAY_SIZE(imx363_supply_name)
++struct imx363_power_config {
++	const struct regulator_bulk_data *supplies;
++	unsigned int num_supplies;
++	unsigned int clock_settle_us;
++	unsigned int supplies_settle_us;
++	unsigned int reset_settle_us;
++};
++
++static const struct regulator_bulk_data imx363_supplies[] = {
++	{ .supply = "vana" },
++	{ .supply = "vdig" },
++	{ .supply = "vif" },
++};
++
++static const struct imx363_power_config imx363_power_default = {
++	.supplies = imx363_supplies,
++	.num_supplies = ARRAY_SIZE(imx363_supplies),
++	.supplies_settle_us = 500,
++	.reset_settle_us = 1100,
++};
++
++/* Dipper P0 powers the module in the order used by the vendor driver. */
++static const struct regulator_bulk_data imx363_dipper_supplies[] = {
++	{ .supply = "vana" },
++	{ .supply = "vana-1p8" },
++	{ .supply = "vana-aux" },
++	{ .supply = "vif" },
++	{ .supply = "vdig" },
++	{ .supply = "vcore" },
++};
++
++static const struct imx363_power_config imx363_power_dipper = {
++	.supplies = imx363_dipper_supplies,
++	.num_supplies = ARRAY_SIZE(imx363_dipper_supplies),
++	.clock_settle_us = 1000,
++	.supplies_settle_us = 10000,
++	.reset_settle_us = 20000,
++};
+ 
+ enum {
+ 	IMX363_LINK_FREQ_2300MBPS,
+@@ -620,7 +650,8 @@
+ 	struct mutex mutex;
+ 
+ 	struct clk *clk;
+-	struct regulator_bulk_data supplies[IMX363_NUM_SUPPLIES];
++	const struct imx363_power_config *power;
++	struct regulator_bulk_data *supplies;
+ };
+ 
+ static inline struct imx363 *to_imx363(struct v4l2_subdev *_sd)
+@@ -1038,41 +1069,70 @@
+ {
+ 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+ 	struct imx363 *imx363 = to_imx363(sd);
++	const struct imx363_power_config *power = imx363->power;
++	unsigned int enabled = 0;
+ 	int ret;
+ 
+-	ret = regulator_bulk_enable(IMX363_NUM_SUPPLIES,
+-				    imx363->supplies);
+-	if (ret) {
+-		dev_err(dev, "%s: failed to enable regulators\n",
+-			__func__);
+-		return ret;
+-	}
+-
+-	usleep_range(400, 600);
++	/* The Dipper module needs MCLK running before its rails come up. */
++	if (power->clock_settle_us) {
++		ret = clk_prepare_enable(imx363->clk);
++		if (ret)
++			return dev_err_probe(dev, ret, "failed to enable clock\n");
++		fsleep(power->clock_settle_us);
++	}
++
++	for (; enabled < power->num_supplies; enabled++) {
++		struct regulator_bulk_data *supply = &imx363->supplies[enabled];
++
++		ret = regulator_enable(supply->consumer);
++		if (ret) {
++			dev_err(dev, "failed to enable %s: %pe\n",
++				supply->supply, ERR_PTR(ret));
++			goto disable_supplies;
++		}
++	}
++
++	fsleep(power->supplies_settle_us);
++
++	if (!power->clock_settle_us) {
++		ret = clk_prepare_enable(imx363->clk);
++		if (ret) {
++			dev_err(dev, "failed to enable clock: %pe\n", ERR_PTR(ret));
++			goto disable_supplies;
++		}
++	}
+ 
+ 	gpiod_set_value_cansleep(imx363->reset_gpio, 0);
+-
+-	ret = clk_prepare_enable(imx363->clk);
+-	if (ret) {
+-		dev_err(dev, "failed to enable clock\n");
+-		regulator_bulk_disable(IMX363_NUM_SUPPLIES, imx363->supplies);
+-	}
+-
+-	usleep_range(1000, 1200);
++	fsleep(power->reset_settle_us);
+ 
+ 	return 0;
++
++disable_supplies:
++	regulator_bulk_disable(enabled, imx363->supplies);
++	if (power->clock_settle_us)
++		clk_disable_unprepare(imx363->clk);
++
++	return ret;
+ }
+ 
+ static int imx363_power_off(struct device *dev)
+ {
+ 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+ 	struct imx363 *imx363 = to_imx363(sd);
++	const struct imx363_power_config *power = imx363->power;
++	int ret;
++
++	gpiod_set_value_cansleep(imx363->reset_gpio, 1);
++	ret = regulator_bulk_disable(power->num_supplies, imx363->supplies);
++	if (ret) {
++		/* The regulator core rolled back the suspend. */
++		fsleep(power->supplies_settle_us);
++		gpiod_set_value_cansleep(imx363->reset_gpio, 0);
++		fsleep(power->reset_settle_us);
++		return ret;
++	}
+ 
+ 	clk_disable_unprepare(imx363->clk);
+-
+-	gpiod_set_value_cansleep(imx363->reset_gpio, 1);
+-
+-	regulator_bulk_disable(IMX363_NUM_SUPPLIES, imx363->supplies);
+ 
+ 	return 0;
+ }
+@@ -1285,18 +1345,6 @@
+ 	mutex_destroy(&imx363->mutex);
+ }
+ 
+-static int imx363_get_regulators(struct imx363 *imx363,
+-				 struct i2c_client *client)
+-{
+-	unsigned int i;
+-
+-	for (i = 0; i < IMX363_NUM_SUPPLIES; i++)
+-		imx363->supplies[i].supply = imx363_supply_name[i];
+-
+-	return devm_regulator_bulk_get(&client->dev,
+-				    IMX363_NUM_SUPPLIES, imx363->supplies);
+-}
+-
+ static int imx363_probe(struct i2c_client *client)
+ {
+ 	struct imx363 *imx363;
+@@ -1318,7 +1366,14 @@
+ 		return ret;
+ 	}
+ 
+-	ret = imx363_get_regulators(imx363, client);
++	imx363->power = device_get_match_data(&client->dev);
++	if (!imx363->power)
++		imx363->power = &imx363_power_default;
++
++	ret = devm_regulator_bulk_get_const(&client->dev,
++					   imx363->power->num_supplies,
++					   imx363->power->supplies,
++					   &imx363->supplies);
+ 	if (ret)
+ 		return dev_err_probe(&client->dev, ret,
+ 				     "failed to get regulators\n");
+@@ -1399,9 +1454,11 @@
+ 
+ 	/* request optional reset pin */
+ 	imx363->reset_gpio = devm_gpiod_get_optional(&client->dev, "reset",
+-						     GPIOD_OUT_LOW);
+-	if (IS_ERR(imx363->reset_gpio))
+-		return PTR_ERR(imx363->reset_gpio);
++						     GPIOD_OUT_HIGH);
++	if (IS_ERR(imx363->reset_gpio)) {
++		ret = PTR_ERR(imx363->reset_gpio);
++		goto error_endpoint_free;
++	}
+ 
+ 	/* Initialize subdev */
+ 	v4l2_i2c_subdev_init(&imx363->sd, client, &imx363_subdev_ops);
+@@ -1490,7 +1547,8 @@
+ #endif
+ 
+ static const struct of_device_id imx363_dt_ids[] = {
+-	{ .compatible = "sony,imx363"},
++	{ .compatible = "xiaomi,dipper-imx363", .data = &imx363_power_dipper },
++	{ .compatible = "sony,imx363" },
+ 	{ /* sentinel */ }
+ };
+ MODULE_DEVICE_TABLE(of, imx363_dt_ids);

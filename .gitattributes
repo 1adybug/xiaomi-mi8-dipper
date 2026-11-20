@@ -1,0 +1,5 @@
+/kernel/*.patch text eol=lf whitespace=-blank-at-eol,-space-before-tab
+/kernel/*.sh text eol=lf
+/scripts/*.sh text eol=lf
+/pmaports/**/APKBUILD text eol=lf
+/pmaports/**/deviceinfo text eol=lf
